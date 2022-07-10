@@ -3,12 +3,14 @@ package mon
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/zeromicro/go-zero/core/breaker"
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/core/stringx"
+	"github.com/zeromicro/go-zero/core/timex"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -567,6 +569,63 @@ func TestCollection_UpdateMany(t *testing.T) {
 	})
 }
 
+func Test_DecoratedCollectionLogDuration(t *testing.T) {
+	mt := mtest.New(t, mtest.NewOptions().ClientType(mtest.Mock))
+	defer mt.Close()
+	c := decoratedCollection{
+		Collection: mt.Coll,
+		brk:        breaker.NewBreaker(),
+	}
+
+	var buf strings.Builder
+	w := logx.NewWriter(&buf)
+	o := logx.Reset()
+	logx.SetWriter(w)
+
+	defer func() {
+		logx.Reset()
+		logx.SetWriter(o)
+	}()
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now(), nil, "bar")
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "bar")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now(), errors.New("bar"), make(chan int))
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "bar")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now(), nil, make(chan int))
+	assert.Contains(t, buf.String(), "foo")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now()-slowThreshold.Load()*2,
+		nil, make(chan int))
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "slowcall")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now()-slowThreshold.Load()*2,
+		errors.New("bar"), make(chan int))
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "bar")
+	assert.Contains(t, buf.String(), "slowcall")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now()-slowThreshold.Load()*2,
+		errors.New("bar"))
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "slowcall")
+
+	buf.Reset()
+	c.logDuration(context.Background(), "foo", timex.Now()-slowThreshold.Load()*2, nil)
+	assert.Contains(t, buf.String(), "foo")
+	assert.Contains(t, buf.String(), "slowcall")
+}
+
 type mockPromise struct {
 	accepted bool
 	reason   string
@@ -590,15 +649,15 @@ func (d *dropBreaker) Allow() (breaker.Promise, error) {
 	return nil, errDummy
 }
 
-func (d *dropBreaker) Do(req func() error) error {
+func (d *dropBreaker) Do(_ func() error) error {
 	return nil
 }
 
-func (d *dropBreaker) DoWithAcceptable(req func() error, acceptable breaker.Acceptable) error {
+func (d *dropBreaker) DoWithAcceptable(_ func() error, _ breaker.Acceptable) error {
 	return errDummy
 }
 
-func (d *dropBreaker) DoWithFallback(req func() error, fallback func(err error) error) error {
+func (d *dropBreaker) DoWithFallback(_ func() error, _ func(err error) error) error {
 	return nil
 }
 

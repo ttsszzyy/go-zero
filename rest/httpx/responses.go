@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/zeromicro/go-zero/core/logx"
+	"github.com/zeromicro/go-zero/rest/internal/errcode"
+	"github.com/zeromicro/go-zero/rest/internal/header"
 )
 
 var (
@@ -22,9 +24,14 @@ func Error(w http.ResponseWriter, err error, fns ...func(w http.ResponseWriter, 
 	if handler == nil {
 		if len(fns) > 0 {
 			fns[0](w, err)
+		} else if errcode.IsGrpcError(err) {
+			// don't unwrap error and get status.Message(),
+			// it hides the rpc error headers.
+			http.Error(w, err.Error(), errcode.CodeFromGrpcError(err))
 		} else {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
+
 		return
 	}
 
@@ -67,7 +74,7 @@ func WriteJson(w http.ResponseWriter, code int, v interface{}) {
 		return
 	}
 
-	w.Header().Set(ContentType, ApplicationJson)
+	w.Header().Set(ContentType, header.JsonContentType)
 	w.WriteHeader(code)
 
 	if n, err := w.Write(bs); err != nil {

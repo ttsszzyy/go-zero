@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/zeromicro/go-zero/core/logx"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type message struct {
@@ -95,6 +97,16 @@ func TestError(t *testing.T) {
 	}
 }
 
+func TestErrorWithGrpcError(t *testing.T) {
+	w := tracedResponseWriter{
+		headers: make(map[string][]string),
+	}
+	Error(&w, status.Error(codes.Unavailable, "foo"))
+	assert.Equal(t, http.StatusServiceUnavailable, w.code)
+	assert.True(t, w.hasBody)
+	assert.True(t, strings.Contains(w.builder.String(), "foo"))
+}
+
 func TestErrorWithHandler(t *testing.T) {
 	w := tracedResponseWriter{
 		headers: make(map[string][]string),
@@ -129,7 +141,18 @@ func TestWriteJsonTimeout(t *testing.T) {
 	// only log it and ignore
 	w := tracedResponseWriter{
 		headers: make(map[string][]string),
-		timeout: true,
+		err:     http.ErrHandlerTimeout,
+	}
+	msg := message{Name: "anyone"}
+	WriteJson(&w, http.StatusOK, msg)
+	assert.Equal(t, http.StatusOK, w.code)
+}
+
+func TestWriteJsonError(t *testing.T) {
+	// only log it and ignore
+	w := tracedResponseWriter{
+		headers: make(map[string][]string),
+		err:     errors.New("foo"),
 	}
 	msg := message{Name: "anyone"}
 	WriteJson(&w, http.StatusOK, msg)
@@ -162,8 +185,8 @@ type tracedResponseWriter struct {
 	hasBody     bool
 	code        int
 	lessWritten bool
-	timeout     bool
 	wroteHeader bool
+	err         error
 }
 
 func (w *tracedResponseWriter) Header() http.Header {
@@ -171,8 +194,8 @@ func (w *tracedResponseWriter) Header() http.Header {
 }
 
 func (w *tracedResponseWriter) Write(bytes []byte) (n int, err error) {
-	if w.timeout {
-		return 0, http.ErrHandlerTimeout
+	if w.err != nil {
+		return 0, w.err
 	}
 
 	n, err = w.builder.Write(bytes)

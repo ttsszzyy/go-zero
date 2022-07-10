@@ -4,14 +4,25 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	ztrace "github.com/zeromicro/go-zero/core/trace"
 	"github.com/zeromicro/go-zero/rest/httpx"
+	"github.com/zeromicro/go-zero/rest/internal/header"
 	"github.com/zeromicro/go-zero/rest/router"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestDoRequest(t *testing.T) {
+	ztrace.StartAgent(ztrace.Config{
+		Name:     "go-zero-test",
+		Endpoint: "http://localhost:14268/api/traces",
+		Batcher:  "jaeger",
+		Sampler:  1.0,
+	})
+
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 	}))
 	defer svr.Close()
@@ -20,6 +31,8 @@ func TestDoRequest(t *testing.T) {
 	resp, err := DoRequest(req)
 	assert.Nil(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	spanContext := trace.SpanContextFromContext(resp.Request.Context())
+	assert.True(t, spanContext.IsValid())
 }
 
 func TestDoRequest_NotFound(t *testing.T) {
@@ -27,7 +40,7 @@ func TestDoRequest_NotFound(t *testing.T) {
 	defer svr.Close()
 	req, err := http.NewRequest(http.MethodPost, svr.URL, nil)
 	assert.Nil(t, err)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(header.ContentType, header.JsonContentType)
 	resp, err := DoRequest(req)
 	assert.Nil(t, err)
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -156,4 +169,47 @@ func TestDo_BadRequest(t *testing.T) {
 	}
 	_, err = Do(context.Background(), http.MethodPost, "/nodes/:val", val5)
 	assert.NotNil(t, err)
+}
+
+func TestDo_Json(t *testing.T) {
+	type Data struct {
+		Key    string   `path:"key"`
+		Value  int      `form:"value"`
+		Header string   `header:"X-Header"`
+		Body   chan int `json:"body"`
+	}
+
+	rt := router.NewRouter()
+	err := rt.Handle(http.MethodPost, "/nodes/:key",
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req Data
+			assert.Nil(t, httpx.Parse(r, &req))
+		}))
+	assert.Nil(t, err)
+
+	svr := httptest.NewServer(http.HandlerFunc(rt.ServeHTTP))
+	defer svr.Close()
+
+	data := Data{
+		Key:    "foo",
+		Value:  10,
+		Header: "my-header",
+		Body:   make(chan int),
+	}
+	_, err = Do(context.Background(), http.MethodPost, svr.URL+"/nodes/:key", data)
+	assert.NotNil(t, err)
+}
+
+func TestDo_WithClientHttpTrace(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer svr.Close()
+
+	_, err := Do(httptrace.WithClientTrace(context.Background(),
+		&httptrace.ClientTrace{
+			DNSStart: func(info httptrace.DNSStartInfo) {
+				assert.Equal(t, "localhost", info.Host)
+			},
+		}), http.MethodGet, svr.URL, nil)
+	assert.Nil(t, err)
+
 }
